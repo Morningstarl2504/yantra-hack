@@ -1,0 +1,33 @@
+# Web framework
+Flask==2.3.3
+Flask-Cors==1.10.3
+
+# LangChain core
+langchain==1.2.7
+
+# Transformers / embeddings
+transformers==4.35.0
+sentence-transformers==2.2.2
+
+# FAISS embedding library (CPU)
+faiss-cpu==1.13.2
+
+# Google APIs
+google-generativeai==0.3.0
+googletrans==4.0.0-rc1
+
+# Typing / utilities
+typing-extensions==4.7.1
+pydantic==2.7.4
+python-dotenv==1.0.0
+
+# HTTP / async support for langchain
+aiohttp==3.8.6
+async-timeout==4.0.2
+charset-normalizer==2.0.6
+yarl==1.9.2
+multidict==6.0.4
+
+# Data handling (prebuilt wheels)
+numpy
+pandas
