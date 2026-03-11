@@ -1,67 +1,44 @@
-import { Routes, Route } from 'react-router-dom'
-import Home from './pages/Home'
-import Login from './pages/Login'
-import Login2 from './pages/Login2'
-import Dashboard from './pages/Dashboard'
-import Courseworth from './pages/Courseworth'
-import NotFound from './pages/NotFound'
-import PrivateRoute from './components/routes/PrivateRoute'
-import Signup from './pages/Signup'
-import AiTutor from './pages/AiTutor'
-import Testyourself from './pages/Testyourself'
-import Loginteacher from './pages/Loginteacher'
-import Teacherdashboard from './pages/Teacherdashboard'
-import AllCourses from './pages/AllCourses'
-import MyCoursesPage from './pages/MyCoursesPage'
-import VerifyOtpPage from './pages/Verify'
-import AboutUsPage from './pages/AboutUsPage'
-import { UserData } from './context/UserContext'
-import CourseDescription from './pages/CourseDescription'
-import CourseStudy from './pages/CourseStudy'
+import React, { useState } from 'react';
+import axios from 'axios';
 
 function App() {
-  const {isAuth, user} = UserData()
-  console.log("user",user)
-  return (
-    <>
-      <Routes>
-        <Route path='/' element={<Home />} />
-        <Route path='/login' element={<Login />} />
-        <Route path='/login-form' element={<Login2 />} />
-        <Route path='/signup' element={<Signup />} />
-        <Route path='/login-teacher' element={<Loginteacher />} />
-        <Route path='/teacher-dashboard' element={<Teacherdashboard />} />
+  const [file, setFile] = useState(null);
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-          <Route path='/dashboard' element={   
-            <PrivateRoute>
-              <Dashboard />
-          </PrivateRoute>
-          } />
-          <Route path='/course-worth' element={
-            <PrivateRoute>
-              <Courseworth />
-            </PrivateRoute>
-            } />
-          <Route path='/ai-tutor' element={
-            <PrivateRoute>
-              <AiTutor />
-            </PrivateRoute>
-            } />
-          <Route path='/test-yourself' element={
-              <PrivateRoute>
-                <Testyourself />
-              </PrivateRoute>
-            } />
-          <Route path='*' element={<NotFound />} />
-          <Route path='/all-courses' element={<AllCourses />} />
-          <Route path='/my-courses' element={<MyCoursesPage />} />
-          <Route path='/verify-otp' element={<VerifyOtpPage />} />
-          <Route path='/about-us' element={<AboutUsPage />} />
-          <Route path='/course/:id' element={<CourseDescription />} />
-          <Route path='/course/study/:id' element={<CourseStudy user={user} />} />
-      </Routes>
-    </>
-  )
+  const handleUpload = async () => {
+    if (!file) return alert("Please select an image");
+    
+    const formData = new FormData();
+    formData.append('image', file);
+
+    setLoading(true);
+    try {
+      const res = await axios.post('http://localhost:5000/api/analyze', formData);
+      setResult(res.data);
+    } catch (err) {
+      alert("Analysis failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: '20px', textAlign: 'center' }}>
+      <h1>AgriYantra Crop Care</h1>
+      <input type="file" onChange={(e) => setFile(e.target.files[0])} />
+      <button onClick={handleUpload} disabled={loading}>
+        {loading ? 'Analyzing...' : 'Identify Disease'}
+      </button>
+
+      {result && (
+        <div style={{ marginTop: '20px', border: '1px solid #ccc', padding: '10px' }}>
+          <h3>Result: {result.label}</h3>
+          <p>Confidence: {result.confidence}</p>
+        </div>
+      )}
+    </div>
+  );
 }
 
-export default App
+export default App;
