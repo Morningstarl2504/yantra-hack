@@ -1,7 +1,12 @@
 import React, { useState, useRef } from 'react';
 import axios from 'axios';
 
-const API_URL = 'http://localhost:5001';
+// Fix 1: Point to Node gateway (port 5002), NOT Flask directly (5001)
+// The frontend should never talk to Flask directly
+const API_URL = 'http://localhost:5002';
+
+// Fix 2: Use a stable session ID so all 3 modules share the same document context
+const SESSION_ID = 'session_' + Math.random().toString(36).slice(2, 9);
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('processing'); 
@@ -38,9 +43,11 @@ export default function App() {
 
     try {
       const formData = new FormData();
-      formData.append('file', uploadedFile); 
+      formData.append('document', uploadedFile); // Fix 3: field name must be 'document' (matches Node gateway multer config)
+      formData.append('session_id', SESSION_ID);  // Fix 4: send session_id so Flask stores context under this key
 
-      const res = await axios.post(`${API_URL}/process-content`, formData, {
+      // Fix 5: call Node gateway route /api/upload-material, not Flask directly
+      const res = await axios.post(`${API_URL}/api/upload-material`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setSummary(res.data.summary);
@@ -60,9 +67,11 @@ export default function App() {
     setIsTyping(true);
 
     try {
-      const res = await axios.post(`${API_URL}/tutor-chat`, {
+      // Fix 6: call Node gateway route /api/chat, send session_id
+      const res = await axios.post(`${API_URL}/api/chat`, {
         query: query,
-        language: language
+        language: language,
+        session_id: SESSION_ID, // Fix 7: tutor needs session_id to find the right document context
       });
       setChatLog([...newLog, { sender: 'AI', text: res.data.response }]);
     } catch (error) {
@@ -79,7 +88,10 @@ export default function App() {
     setFeedback(null);
 
     try {
-      const res = await axios.post(`${API_URL}/generate-assessment`);
+      // Fix 8: call Node gateway route /api/quiz, send session_id
+      const res = await axios.post(`${API_URL}/api/quiz`, {
+        session_id: SESSION_ID, // Fix 9: quiz needs session_id to find the right document context
+      });
       setQuizData(res.data.assessment);
     } catch (error) {
       alert(error.response?.data?.error || "Failed to load quiz.");
