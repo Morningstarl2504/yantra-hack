@@ -8,33 +8,49 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
-// Fixed: added file type and size validation
+const SUPPORTED_MIMETYPES = [
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/msword',
+    'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/mp4',
+    'video/mp4', 'video/webm',
+]
+
+const SUPPORTED_EXTENSIONS = /\.(pdf|docx|doc|mp3|mp4|wav|m4a|webm)$/i
+
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB limit
+    limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB for video files
     fileFilter: (req, file, cb) => {
-        if (file.mimetype === 'application/pdf') {
+        if (SUPPORTED_EXTENSIONS.test(file.originalname)) {
             cb(null, true)
         } else {
-            cb(new Error('Only PDF files are allowed'))
+            cb(new Error('Unsupported file type. Please upload PDF, DOCX, MP3, or MP4.'))
         }
     }
 })
 
 const AI_SERVICE_URL = 'http://localhost:5001'
 
-// 1. Route for Content Processing
+// 1. Content Processing — supports PDF, DOCX, MP3, MP4
 app.post('/api/upload-material', upload.single('document'), async (req, res) => {
     try {
         const form = new FormData()
-        form.append('file', req.file.buffer, { filename: req.file.originalname })
+        form.append('file', req.file.buffer, {
+            filename: req.file.originalname,
+            contentType: req.file.mimetype
+        })
+        // Pass session_id and language through to Flask
+        form.append('session_id', req.body.session_id || 'default')
+        form.append('language', req.body.language || 'English')
 
         const response = await axios.post(`${AI_SERVICE_URL}/process-content`, form, {
-            headers: form.getHeaders()
+            headers: form.getHeaders(),
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
         })
         res.json(response.data)
     } catch (error) {
-        // Fixed: log and forward real error details instead of swallowing them
         console.error('Upload error:', error.response?.data || error.message)
         res.status(error.response?.status || 500).json({
             error: error.response?.data?.error || "Failed to process content."
@@ -42,7 +58,7 @@ app.post('/api/upload-material', upload.single('document'), async (req, res) => 
     }
 })
 
-// 2. Route for Multilingual Tutor
+// 2. Multilingual Tutor Chat
 app.post('/api/chat', async (req, res) => {
     try {
         const response = await axios.post(`${AI_SERVICE_URL}/tutor-chat`, req.body)
@@ -55,7 +71,7 @@ app.post('/api/chat', async (req, res) => {
     }
 })
 
-// 3. Route for Adaptive Assessment
+// 3. Adaptive Quiz Generation
 app.post('/api/quiz', async (req, res) => {
     try {
         const response = await axios.post(`${AI_SERVICE_URL}/generate-assessment`, req.body)
@@ -68,5 +84,4 @@ app.post('/api/quiz', async (req, res) => {
     }
 })
 
-// Fixed: changed port to 5002 to avoid conflict with server/app.js on 5000
 app.listen(5002, () => console.log('Ed-Tech AI Gateway running on port 5002'))
