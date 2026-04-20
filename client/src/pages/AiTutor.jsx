@@ -19,7 +19,7 @@ const Aitutor = () => {
   const handleSubmit = async () => {
     try {
       setLoading(true)
-      const response = await axios.post('http://127.0.0.1:5000/answer_doubt', { doubt, target: lang });
+      const response = await axios.post('http://127.0.0.1:5173/answer_doubt', { doubt, target: lang });
       const data = response.data;
       setLoading(false)
       setAnswer(data.answer);

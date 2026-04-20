@@ -17,7 +17,7 @@ const MyCoursesPage = () => {
                     return;
                 }
 
-                const response = await axios.get('http://localhost:5000/api/v1/mycourse', {
+                const response = await axios.get('http://localhost:5173/api/v1/mycourse', {
                     headers: {
                         token: `${token}`,
                     },

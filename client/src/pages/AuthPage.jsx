@@ -3,7 +3,7 @@ import { useAuth } from '../AuthContext'
 
 export default function AuthPage() {
   const { login, register } = useAuth()
-  const [mode,    setMode]    = useState('login')   // 'login' | 'register'
+  const [mode,    setMode]    = useState('login')
   const [role,    setRole]    = useState('student')
   const [form,    setForm]    = useState({ name:'', email:'', password:'', subject:'', institution:'' })
   const [error,   setError]   = useState('')
@@ -17,10 +17,12 @@ export default function AuthPage() {
       if (mode === 'login') {
         await login(form.email, form.password)
       } else {
+        if (!form.name.trim()) { setError('Name is required'); setLoading(false); return }
+        if (form.password.length < 6) { setError('Password must be at least 6 characters'); setLoading(false); return }
         await register({ ...form, role })
       }
     } catch (e) {
-      setError(e.response?.data?.error || 'Something went wrong')
+      setError(e.response?.data?.error || 'Something went wrong. Check that your server is running on port 5173.')
     } finally {
       setLoading(false)
     }
@@ -28,10 +30,10 @@ export default function AuthPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
-      {/* Header */}
       <header className="bg-white border-b-4 border-orange-600 px-6 py-4 flex items-center gap-3">
         <div className="w-8 h-8 rounded-full bg-orange-600 flex items-center justify-center text-white font-bold text-sm">AI</div>
         <h1 className="text-xl font-bold text-orange-600">AI Ed-Tech Platform</h1>
+        <div className="ml-auto text-xs text-gray-400">Team 22BCE0549 & 22BCT0102</div>
       </header>
 
       <div className="flex-1 flex items-center justify-center p-4">
@@ -49,13 +51,12 @@ export default function AuthPage() {
           </div>
 
           <h2 className="text-xl font-bold text-gray-800 mb-1">
-            {mode === 'login' ? `Welcome back` : `Create ${role} account`}
+            {mode === 'login' ? 'Welcome back' : `Create ${role} account`}
           </h2>
           <p className="text-sm text-gray-400 mb-6">
-            {mode === 'login' ? 'Sign in to continue learning' : 'Join the platform today'}
+            {mode === 'login' ? 'Sign in to continue' : 'Join the platform today'}
           </p>
 
-          {/* Form */}
           <div className="space-y-3">
             {mode === 'register' && (
               <input placeholder="Full name" value={form.name} onChange={e => set('name', e.target.value)}
@@ -63,10 +64,9 @@ export default function AuthPage() {
             )}
             <input placeholder="Email address" type="email" value={form.email} onChange={e => set('email', e.target.value)}
               className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-orange-400" />
-            <input placeholder="Password" type="password" value={form.password} onChange={e => set('password', e.target.value)}
+            <input placeholder="Password (min 6 chars)" type="password" value={form.password} onChange={e => set('password', e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSubmit()}
               className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-orange-400" />
-
             {mode === 'register' && role === 'teacher' && (
               <>
                 <input placeholder="Subject (e.g. Mathematics)" value={form.subject} onChange={e => set('subject', e.target.value)}

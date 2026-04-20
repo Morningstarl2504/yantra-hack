@@ -13,7 +13,7 @@ const PaymentModal = ({ course, isOpen, onClose }) => {
                 return;
             }
             const response = await axios.post(
-                `http://localhost:5000/api/v1/payment/${course._id}`,
+                `http://localhost:5173/api/v1/payment/${course._id}`,
                 {
                     headers: {
                         Authorization: `${token}`,

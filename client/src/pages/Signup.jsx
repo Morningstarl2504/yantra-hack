@@ -19,7 +19,7 @@ const Signup = () => {
           console.log(email)
           console.log(password)
   
-          const { data } = await axios.post(`http://localhost:5000/api/v1/register`,{
+          const { data } = await axios.post(`http://localhost:5173/api/v1/register`,{
             name, email, password
   
           })
