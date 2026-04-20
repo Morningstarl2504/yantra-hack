@@ -1,41 +1,31 @@
-const express = require('express')
-const dotenv = require('dotenv')
-const cors = require('cors')
-const connectDB = require('./database/db') // Fixed: was './databse/db'
-const userRoute = require('./routes/userRoute')
-const courseRoute = require('./routes/courseRoute')
-const adminRoute = require('./routes/adminRoute')
+const express    = require('express')
+const dotenv     = require('dotenv')
+const cors       = require('cors')
+const fs         = require('fs')
+const connectDB  = require('./database/db')
+const authRoute  = require('./routes/authRoute')
+const lectureRoute = require('./routes/lectureRoute')
 
 dotenv.config()
 
 const app = express()
-
-// Fixed: lock CORS to frontend origin in production
-app.use(cors({
-    origin: process.env.FRONTEND_URL || '*'
-}))
+app.use(cors({ origin: process.env.FRONTEND_URL || '*' }))
 app.use(express.json())
+
+if (!fs.existsSync('uploads')) fs.mkdirSync('uploads')
 
 const port = process.env.PORT || 5000
 
-app.get("/", (req, res) => {
-    res.send("Server is working!")
-})
-app.use("/uploads", express.static("uploads"))
+app.get('/', (req, res) => res.send('Server is working!'))
+app.use('/uploads', express.static('uploads'))
+app.use('/api/auth',     authRoute)
+app.use('/api/lectures', lectureRoute)
 
-app.use("/api", userRoute)
-app.use("/api", courseRoute)
-app.use("/api", adminRoute)
+// Keep your existing routes if they exist
+try { app.use('/api', require('./routes/userRoute'))   } catch(e) {}
+try { app.use('/api', require('./routes/courseRoute')) } catch(e) {}
+try { app.use('/api', require('./routes/adminRoute'))  } catch(e) {}
 
-// Fixed: connect to DB first, then start the server
-// This ensures no requests are handled before the DB is ready
 connectDB()
-    .then(() => {
-        app.listen(port, () => {
-            console.log(`Server is running at port ${port}`)
-        })
-    })
-    .catch((err) => {
-        console.error("Failed to connect to database:", err)
-        process.exit(1)
-    })
+  .then(() => app.listen(port, () => console.log(`Server running on port ${port}`)))
+  .catch(err => { console.error('DB failed:', err); process.exit(1) })

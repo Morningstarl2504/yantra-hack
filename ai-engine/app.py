@@ -1,249 +1,242 @@
-import os
-import re
-import io
-import json
-import base64
-import logging
-import tempfile
+import os, re, io, json, base64, logging, tempfile, time
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import PyPDF2
-import docx
+import PyPDF2, docx
 import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
-
 app = Flask(__name__)
 CORS(app)
 
 API_KEY = os.getenv("GEMINI_API_KEY")
-if not API_KEY:
-    raise ValueError("GEMINI_API_KEY not found in .env file")
+if not API_KEY: raise ValueError("GEMINI_API_KEY not found in .env file")
 genai.configure(api_key=API_KEY)
-
 text_model = genai.GenerativeModel('gemini-2.5-flash')
 
-# { session_id: { "text": str, "file_uri": str|None, "mime_type": str, "type": "text"|"av" } }
 SESSION_CONTEXTS = {}
+SUPPORTED_EXTENSIONS = {'pdf','docx','doc','mp3','mp4','wav','m4a','webm'}
 
-SUPPORTED_EXTENSIONS = {'pdf', 'docx', 'doc', 'mp3', 'mp4', 'wav', 'm4a', 'webm'}
+SUMMARY_PROMPT = """
+You are an expert educational content analyser.
+Analyse the provided content and respond in {language} with this structure:
 
+## Overview
+A 2-3 sentence high-level summary of what this content covers.
+
+## Key Points
+List 6-10 specific, detailed key points. Each must be a full informative sentence explaining a concept or insight.
+
+## Important Terms
+List 4-6 important terms with a one-line definition each.
+
+## What You Should Know
+2-3 sentences on the main takeaways for a student.
+"""
 
 def get_mime_type(filename):
-    ext = filename.rsplit('.', 1)[-1].lower()
-    return {
-        'pdf':  'application/pdf',
-        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'doc':  'application/msword',
-        'mp3':  'audio/mpeg',
-        'wav':  'audio/wav',
-        'm4a':  'audio/mp4',
-        'webm': 'video/webm',
-        'mp4':  'video/mp4',
-    }.get(ext, 'application/octet-stream')
+    ext = filename.rsplit('.',1)[-1].lower()
+    return {'pdf':'application/pdf','docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'doc':'application/msword','mp3':'audio/mpeg','wav':'audio/wav',
+            'm4a':'audio/mp4','webm':'video/webm','mp4':'video/mp4'}.get(ext,'application/octet-stream')
 
+def extract_text_from_pdf(b):
+    r = PyPDF2.PdfReader(io.BytesIO(b))
+    return "\n".join(p.extract_text() or "" for p in r.pages[:20])
 
-def extract_text_from_pdf(file_bytes):
-    reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-    return "\n".join(page.extract_text() for page in reader.pages[:15])
+def extract_text_from_docx(b):
+    d = docx.Document(io.BytesIO(b))
+    return "\n".join(p.text for p in d.paragraphs if p.text.strip())
 
-
-def extract_text_from_docx(file_bytes):
-    doc = docx.Document(io.BytesIO(file_bytes))
-    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-
-
-def upload_to_gemini(file_bytes, mime_type, filename):
+def upload_to_gemini_with_retry(file_bytes, mime_type, filename, retries=3):
     suffix = os.path.splitext(filename)[1] or '.tmp'
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
+        tmp.write(file_bytes); tmp_path = tmp.name
     try:
-        uploaded = genai.upload_file(tmp_path, mime_type=mime_type)
-        return uploaded.uri
+        for attempt in range(retries):
+            try:
+                uploaded = genai.upload_file(tmp_path, mime_type=mime_type)
+                for _ in range(30):
+                    info = genai.get_file(uploaded.name)
+                    if info.state.name == "ACTIVE": return uploaded.uri, uploaded.name
+                    if info.state.name == "FAILED": raise Exception("Gemini file processing failed")
+                    time.sleep(2)
+                raise Exception("File processing timed out")
+            except Exception as e:
+                if attempt == retries-1: raise
+                time.sleep(3)
     finally:
         os.unlink(tmp_path)
 
+def download_youtube_audio(url):
+    try: import yt_dlp
+    except ImportError: raise Exception("yt-dlp not installed. Run: pip install yt-dlp")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(tmpdir, '%(title)s.%(ext)s'),
+            'postprocessors': [{'key':'FFmpegExtractAudio','preferredcodec':'mp3','preferredquality':'128'}],
+            'quiet': True, 'no_warnings': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title','video')
+        for fname in os.listdir(tmpdir):
+            if fname.endswith('.mp3'):
+                with open(os.path.join(tmpdir, fname),'rb') as f:
+                    return f.read(), fname, title
+        raise Exception("Audio extraction failed")
 
 def generate_audio(text):
-    """Generate TTS audio from text. Returns base64 string or None."""
     try:
         tts = text_model.generate_content(
-            f"Read aloud the following text naturally and clearly:\n\n{text}",
-            generation_config={"response_modalities": ["AUDIO"]},
+            f"Read the following text naturally as a tutor would:\n\n{text[:3000]}",
+            generation_config=genai.types.GenerationConfig(response_modalities=["AUDIO"]),
         )
         part = tts.candidates[0].content.parts[0]
-        if part.inline_data:
+        if hasattr(part,'inline_data') and part.inline_data:
             return base64.b64encode(part.inline_data.data).decode('utf-8')
     except Exception as e:
-        logging.warning(f"TTS failed (non-critical): {e}")
+        logging.warning(f"TTS failed: {e}")
     return None
 
-
 @app.route('/health')
-def health():
-    return jsonify({"status": "ok"})
+def health(): return jsonify({"status":"ok"})
 
+# --- Load a pre-processed lecture into a session (called by Node when student opens a lecture) ---
+@app.route('/load-session', methods=['POST'])
+def load_session():
+    data = request.json or {}
+    session_id   = data.get('session_id','default')
+    SESSION_CONTEXTS[session_id] = {
+        "text":        data.get('summary',''),
+        "file_uri":    data.get('file_uri'),
+        "mime_type":   data.get('mime_type',''),
+        "type":        data.get('content_type','text'),
+        "title":       data.get('title','')
+    }
+    return jsonify({"status":"loaded","session_id":session_id})
 
 # --- MODULE 1: Content Processing ---
 @app.route('/process-content', methods=['POST'])
 def process_content():
     if 'file' not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-
-    session_id = request.form.get('session_id', 'default')
-    language   = request.form.get('language', 'English')
+        return jsonify({"error":"No file uploaded"}), 400
+    session_id = request.form.get('session_id','default')
+    language   = request.form.get('language','English')
     file       = request.files['file']
     filename   = file.filename
-    ext        = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-
+    ext        = filename.rsplit('.',1)[-1].lower() if '.' in filename else ''
     if ext not in SUPPORTED_EXTENSIONS:
-        return jsonify({"error": f"Unsupported file type '.{ext}'. Supported: PDF, DOCX, DOC, MP3, MP4, WAV, M4A."}), 400
-
+        return jsonify({"error":f"Unsupported type '.{ext}'"}), 400
     file_bytes = file.read()
     mime_type  = get_mime_type(filename)
-    is_av      = ext in {'mp3', 'mp4', 'wav', 'm4a', 'webm'}
-
+    is_av      = ext in {'mp3','mp4','wav','m4a','webm'}
     try:
         if is_av:
-            file_uri = upload_to_gemini(file_bytes, mime_type, filename)
-            SESSION_CONTEXTS[session_id] = {
-                "text": "", "file_uri": file_uri,
-                "mime_type": mime_type, "type": "av"
-            }
+            file_uri, file_name = upload_to_gemini_with_retry(file_bytes, mime_type, filename)
+            SESSION_CONTEXTS[session_id] = {"text":"","file_uri":file_uri,"mime_type":mime_type,"type":"av","title":filename}
             kind = 'audio' if 'audio' in mime_type else 'video'
-            prompt = (
-                f"Transcribe this {kind} fully, then provide a concise professional summary "
-                f"of the key topics covered. Respond entirely in {language}."
-            )
-            response = text_model.generate_content([
-                {"file_data": {"mime_type": mime_type, "file_uri": file_uri}},
-                prompt
-            ])
+            prompt = SUMMARY_PROMPT.format(language=language)+f"\n\nAnalyse this {kind}."
+            response = text_model.generate_content([{"file_data":{"mime_type":mime_type,"file_uri":file_uri}}, prompt])
             summary_text = response.text
             SESSION_CONTEXTS[session_id]["text"] = summary_text
-
         elif ext == 'pdf':
             text = extract_text_from_pdf(file_bytes)
-            SESSION_CONTEXTS[session_id] = {"text": text, "file_uri": None, "type": "text"}
-            response = text_model.generate_content(
-                f"Summarize the following educational material concisely in one paragraph. "
-                f"Respond in {language}.\n\n{text[:5000]}"
-            )
+            SESSION_CONTEXTS[session_id] = {"text":text,"file_uri":None,"type":"text","title":filename}
+            response = text_model.generate_content(SUMMARY_PROMPT.format(language=language)+f"\n\nContent:\n{text[:8000]}")
             summary_text = response.text
-
-        else:  # docx / doc
+        else:
             text = extract_text_from_docx(file_bytes)
-            SESSION_CONTEXTS[session_id] = {"text": text, "file_uri": None, "type": "text"}
-            response = text_model.generate_content(
-                f"Summarize the following educational material concisely in one paragraph. "
-                f"Respond in {language}.\n\n{text[:5000]}"
-            )
+            SESSION_CONTEXTS[session_id] = {"text":text,"file_uri":None,"type":"text","title":filename}
+            response = text_model.generate_content(SUMMARY_PROMPT.format(language=language)+f"\n\nContent:\n{text[:8000]}")
             summary_text = response.text
-
-        return jsonify({
-            "status": "success",
-            "summary": summary_text,
-            "audio_summary": generate_audio(summary_text),
-            "session_id": session_id
-        })
-
+        return jsonify({"status":"success","summary":summary_text,
+                        "audio_summary":generate_audio(summary_text),
+                        "session_id":session_id,"title":SESSION_CONTEXTS[session_id].get("title",filename),
+                        "file_uri":SESSION_CONTEXTS[session_id].get("file_uri"),
+                        "mime_type":mime_type,
+                        "content_type":"av" if is_av else "text"})
     except Exception as e:
         logging.error(f"Processing error: {e}")
-        return jsonify({"error": f"Failed to process file: {str(e)}"}), 500
+        return jsonify({"error":f"Failed: {str(e)}"}), 500
 
+# --- MODULE 1b: YouTube / URL ---
+@app.route('/process-url', methods=['POST'])
+def process_url():
+    data = request.json or {}
+    url = data.get('url','').strip()
+    session_id = data.get('session_id','default')
+    language   = data.get('language','English')
+    if not url: return jsonify({"error":"No URL"}), 400
+    try:
+        audio_bytes, filename, title = download_youtube_audio(url)
+        file_uri, file_name = upload_to_gemini_with_retry(audio_bytes,'audio/mpeg',filename)
+        SESSION_CONTEXTS[session_id] = {"text":"","file_uri":file_uri,"mime_type":"audio/mpeg","type":"av","title":title}
+        prompt = SUMMARY_PROMPT.format(language=language)+"\n\nAnalyse this audio."
+        response = text_model.generate_content([{"file_data":{"mime_type":"audio/mpeg","file_uri":file_uri}},prompt])
+        summary_text = response.text
+        SESSION_CONTEXTS[session_id]["text"] = summary_text
+        return jsonify({"status":"success","summary":summary_text,"audio_summary":generate_audio(summary_text),
+                        "session_id":session_id,"title":title,"file_uri":file_uri,
+                        "mime_type":"audio/mpeg","content_type":"av"})
+    except Exception as e:
+        logging.error(f"URL error: {e}")
+        return jsonify({"error":f"Failed: {str(e)}"}), 500
 
-# --- MODULE 2: Multilingual AI Tutor ---
+# --- MODULE 2: Tutor ---
 @app.route('/tutor-chat', methods=['POST'])
 def tutor_chat():
-    data       = request.json
-    user_query = data.get('query', '')
-    language   = data.get('language', 'English')
-    session_id = data.get('session_id', 'default')
-
+    data = request.json
+    user_query = data.get('query','')
+    language   = data.get('language','English')
+    session_id = data.get('session_id','default')
     ctx = SESSION_CONTEXTS.get(session_id)
-    if not ctx:
-        return jsonify({"status": "error", "response": "Please upload a document or media file first."})
-
+    if not ctx: return jsonify({"status":"error","response":"Please open a lecture first."})
     try:
-        if ctx.get("type") == "av" and ctx.get("file_uri"):
-            prompt = (
-                f"You are an expert AI tutor. The student has provided an audio/video lecture. "
-                f"Answer the question based ONLY on that lecture. "
-                f"If not covered, say so. Respond entirely in {language}.\n\n"
-                f"Student question: {user_query}"
-            )
-            response = text_model.generate_content([
-                {"file_data": {"mime_type": ctx["mime_type"], "file_uri": ctx["file_uri"]}},
-                prompt
-            ])
+        if ctx.get("type")=="av" and ctx.get("file_uri"):
+            prompt = (f"You are an expert AI tutor for the lecture '{ctx.get('title','')}'. "
+                      f"Answer based ONLY on the lecture content. Respond in {language}.\n\nQuestion: {user_query}")
+            response = text_model.generate_content([{"file_data":{"mime_type":ctx["mime_type"],"file_uri":ctx["file_uri"]}},prompt])
         else:
-            prompt = (
-                f"You are an expert AI tutor. Answer using ONLY the provided course material. "
-                f"If not covered, say so. Respond entirely in {language}.\n\n"
-                f"Course Material: {ctx.get('text','')[:6000]}\n\n"
-                f"Student Question: {user_query}"
-            )
+            prompt = (f"You are an expert AI tutor. Answer using ONLY the course material. "
+                      f"Respond in {language}.\n\nMaterial:\n{ctx.get('text','')[:7000]}\n\nQuestion: {user_query}")
             response = text_model.generate_content(prompt)
-
-        answer_text = response.text
-        return jsonify({
-            "status": "success",
-            "response": answer_text,
-            "audio_response": generate_audio(answer_text)
-        })
-
+        answer = response.text
+        return jsonify({"status":"success","response":answer,"audio_response":generate_audio(answer)})
     except Exception as e:
         logging.error(f"Chat error: {e}")
-        return jsonify({"status": "error", "response": f"Error: {str(e)}"}), 500
+        return jsonify({"status":"error","response":str(e)}), 500
 
-
-# --- MODULE 3: Adaptive Assessment ---
+# --- MODULE 3: Assessment ---
 @app.route('/generate-assessment', methods=['POST'])
 def generate_assessment():
-    data       = request.json or {}
-    session_id = data.get('session_id', 'default')
-
+    data = request.json or {}
+    session_id = data.get('session_id','default')
     ctx = SESSION_CONTEXTS.get(session_id)
-    if not ctx:
-        return jsonify({"error": "Please upload course material first."}), 400
-
+    if not ctx: return jsonify({"error":"Please open a lecture first."}), 400
+    schema = ('Return ONLY raw valid JSON, no markdown.\n'
+              '{"topic":"...","difficulty":"Beginner|Intermediate|Advanced","question":"...",'
+              '"options":["A","B","C","D"],"answer":0,"explanation":"why correct"}')
     for attempt in range(3):
         try:
-            if ctx.get("type") == "av" and ctx.get("file_uri"):
-                contents = [
-                    {"file_data": {"mime_type": ctx["mime_type"], "file_uri": ctx["file_uri"]}},
-                    "Based on this audio/video lecture, generate ONE multiple-choice question. "
-                ]
+            if ctx.get("type")=="av" and ctx.get("file_uri"):
+                contents = [{"file_data":{"mime_type":ctx["mime_type"],"file_uri":ctx["file_uri"]}},
+                            f"Generate ONE MCQ from this lecture.\n{schema}"]
             else:
-                contents = [
-                    f"Based on the following course material, generate ONE multiple-choice question.\n\n"
-                    f"Course Material: {ctx.get('text','')[:5000]}\n\n"
-                ]
-
-            contents[-1] += (
-                "Return ONLY a raw valid JSON object — no markdown, no backticks.\n"
-                'Format: {"topic":"...","difficulty":"...","question":"...","options":["A","B","C","D"],"answer":0}\n'
-                '"answer" is the integer index (0-3) of the correct option.'
-            )
-
+                contents = [f"Generate ONE MCQ from this material.\n\n{ctx.get('text','')[:6000]}\n\n{schema}"]
             response  = text_model.generate_content(contents)
-            clean     = re.sub(r'```(?:json)?\s*|\s*```', '', response.text).strip()
+            clean     = re.sub(r'```(?:json)?\s*|\s*```','',response.text).strip()
             quiz_data = json.loads(clean)
-
-            return jsonify({"status": "success", "assessment": quiz_data})
-
-        except json.JSONDecodeError as e:
-            logging.warning(f"Quiz JSON parse failed (attempt {attempt+1}): {e}")
-            if attempt == 2:
-                return jsonify({"error": "Failed to generate quiz. Try again."}), 500
+            assert all(k in quiz_data for k in ['topic','difficulty','question','options','answer'])
+            assert 0 <= quiz_data['answer'] <= 3 and len(quiz_data['options']) == 4
+            return jsonify({"status":"success","assessment":quiz_data})
+        except (json.JSONDecodeError, AssertionError) as e:
+            if attempt==2: return jsonify({"error":"Failed to generate quiz."}), 500
         except Exception as e:
             logging.error(f"Quiz error: {e}")
-            return jsonify({"error": f"Failed to generate quiz: {str(e)}"}), 500
-
+            return jsonify({"error":str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(port=5001, debug=os.getenv("FLASK_ENV") == "development")
+    app.run(port=5001, debug=os.getenv("FLASK_ENV")=="development")
